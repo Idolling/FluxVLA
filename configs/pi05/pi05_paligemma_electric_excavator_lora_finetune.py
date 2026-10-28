@@ -356,3 +356,11 @@ themis = dict(
         ),
     ),
 )
+
+# ── RTC（Real-Time Chunking，推理期前缀条件）─────────────────────────────
+# 生效条件：enabled=True 且客户端在 obs 里上报 rtc_done_steps / rtc_prefix_len；
+# 旧客户端不上报时自动退化为同步 chunk 推理（行为与改造前完全一致）。
+rtc = dict(
+    enabled=True,
+    method='prefix',   # prefix：零额外前向；guidance / guidance_vjp 会明显变慢
+)

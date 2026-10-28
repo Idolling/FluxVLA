@@ -35,6 +35,8 @@ def parse_args():
     p.add_argument('--port', type=int, default=5555)
     p.add_argument('--device', default='cuda:0')
     p.add_argument('--ckpt', default=None)
+    p.add_argument('--rtc', default='auto', choices=('auto', 'on', 'off'),
+                   help='RTC 开关；auto=用 config 的 inference.rtc')
     return p.parse_args()
 
 
@@ -46,6 +48,12 @@ def main() -> int:
     section = cfg.inference
     ckpt = args.ckpt or section['ckpt_path']
     print(f'[serve] ckpt = {ckpt}', flush=True)
+
+    # 顶层 `rtc = dict(...)` 是唯一配置源；inference.rtc 仅作兼容回退。
+    rtc_cfg = dict(cfg.get('rtc') or section.get('rtc') or {})
+    if args.rtc != 'auto':
+        rtc_cfg['enabled'] = args.rtc == 'on'
+    print(f'[serve] rtc = {rtc_cfg or "disabled"}', flush=True)
 
     vla = build_vla_from_cfg(cfg.inference_model)
     state = load_file(ckpt, device='cpu')
@@ -80,6 +88,7 @@ def main() -> int:
         port=args.port,
         device=args.device,
         mixed_precision_dtype=torch.bfloat16,
+        rtc_config=rtc_cfg or None,
     )
     print(f'[serve] ready on tcp://{args.host}:{args.port} '
           f'(task_suite={task_suite})', flush=True)
