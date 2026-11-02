@@ -21,3 +21,4 @@ from .parquet_dataset_v3 import *  # noqa: F401, F403
 from .robodojo_dataset import *  # noqa: F401, F403
 from .sarm_dataset import *  # noqa: F401, F403
 from .utils import *  # noqa: F401, F403
+from .excavator_inference import *  # noqa: F401, F403

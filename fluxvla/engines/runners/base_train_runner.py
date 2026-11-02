@@ -870,6 +870,7 @@ class BaseTrainRunner(ABC):
                     epoch_step_count = 0
                     dataloader_iter = None
 
+        self.metric.finalize()                      # ← 新增这一行
         return self._get_checkpoint_path()
 
     def _sync_step_based_epoch_with_global_step(self) -> None:

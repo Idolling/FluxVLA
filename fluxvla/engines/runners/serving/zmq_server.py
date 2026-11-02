@@ -191,6 +191,7 @@ def create_server(
     port: int = 5555,
     device: str = 'cuda:0',
     mixed_precision_dtype=torch.bfloat16,
+    rtc_config: dict | None = None,
 ) -> PolicyServer:
     """Create a ZMQ server that wraps a VLA model.
 
@@ -208,6 +209,23 @@ def create_server(
     vla.eval()
     vla.to(torch_device)
 
+    # ---- RTC（Real-Time Chunking）状态 ----
+    # prev_actions 保存上一次返回给客户端的 chunk（归一化空间，未经反归一化），
+    # 下一次请求按客户端上报的已执行步数切出未执行后缀作为前缀。
+    rtc_cfg = dict(rtc_config or {})
+    rtc_enabled = bool(rtc_cfg.get('enabled', False))
+    rtc_method = str(rtc_cfg.get('method', 'prefix'))
+    rtc_state: dict = {'prev_actions': None, 'prefix_total': 0}
+
+    def _pop_rtc_scalar(obs_dict, key):
+        """取出并删除 obs 里的 int 标量字段（不进 dataset 预处理）。"""
+        if not isinstance(obs_dict, dict):
+            return None
+        value = obs_dict.pop(key, None)
+        if value is None:
+            return None
+        return int(np.asarray(value).reshape(-1)[0])
+
     lock = threading.Lock()
     total_requests = 0
     total_infer_time = 0.0
@@ -221,6 +239,8 @@ def create_server(
 
         obs = _obs_dict if _obs_dict is not None else \
             ObsSerializer.from_bytes(obs_data)
+        rtc_done_steps = _pop_rtc_scalar(obs, 'rtc_done_steps')
+        rtc_prefix_len = _pop_rtc_scalar(obs, 'rtc_prefix_len') or 0
         denormalize_context = {}
         if isinstance(obs, dict) and obs.get('qpos') is not None:
             denormalize_context['state'] = np.asarray(
@@ -250,7 +270,28 @@ def create_server(
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(torch_device)
+            prefix_used = 0
+            if (rtc_enabled and rtc_done_steps is not None
+                    and rtc_prefix_len > 0
+                    and rtc_state['prev_actions'] is not None):
+                prev = rtc_state['prev_actions']
+                n_steps = int(getattr(vla, 'n_action_steps', prev.shape[1]))
+                done = max(0, min(int(rtc_done_steps), n_steps))
+                avail = max(0, min(n_steps, prev.shape[1]) - done)
+                span = max(0, min(int(rtc_prefix_len), avail))
+                if span > 0:
+                    batch['prev_actions'] = prev[:, done:done + span].to(
+                        torch_device)
+                    batch['prefix_len'] = span
+                    batch['rtc_config'] = {
+                        'enabled': True,
+                        'method': rtc_method,
+                    }
+                    prefix_used = span
             actions = vla.predict_action(**batch)
+            if rtc_enabled:
+                rtc_state['prev_actions'] = actions.detach().clone()
+                rtc_state['prefix_total'] += prefix_used
         infer_time = time.perf_counter() - t0
 
         if denormalize_action is not None:
@@ -278,9 +319,14 @@ def create_server(
                 'avg_infer={:.1f}ms'.format(avg * 1000),
                 flush=True)
 
-        return {'action_data': action_bytes, 'infer_time': infer_time}
+        return {
+            'action_data': action_bytes,
+            'infer_time': infer_time,
+            'rtc_prefix_len': prefix_used,
+        }
 
     def reset() -> dict:
+        rtc_state['prev_actions'] = None
         return {'status': 'ok'}
 
     def get_status() -> dict:

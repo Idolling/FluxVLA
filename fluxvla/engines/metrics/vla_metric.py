@@ -177,6 +177,64 @@ class TensorBoardTracker:
             self.writer.close()
 
 
+class SwanLabTracker:
+
+    def __init__(self,
+                 run_id: str,
+                 run_dir: str,
+                 hparams: Dict[str, Any],
+                 group: str = 'vla-train') -> None:
+        """Initialize SwanLab Tracker.
+
+        Environment Variables:
+            SWANLAB_PROJECT: project name. Defaults to "fluxvla".
+            SWANLAB_WORKSPACE: workspace. Defaults to None.
+            SWANLAB_API_KEY: API key, or run `swanlab login` once.
+        """
+        self.run_id, self.run_dir, self.hparams = run_id, run_dir, hparams
+        self.project = os.environ.get('SWANLAB_PROJECT', 'fluxvla')
+        self.workspace = os.environ.get('SWANLAB_WORKSPACE') or None
+        self.group = group
+        self.run = None
+        self.initialize()
+
+    @overwatch.rank_zero_only
+    def initialize(self) -> None:
+        # 延迟导入：Thor 等推理环境没装 swanlab，顶层 import 会让整包 import 失败
+        import swanlab
+        try:
+            cfg = self.hparams.to_dict()
+        except AttributeError:
+            cfg = dict(self.hparams or {})
+        # Config 里可能有 tuple / Path，swanlab 的 config 需要可 JSON 序列化
+        cfg = {k: v if isinstance(v, (int, float, str, bool, list, dict))
+               or v is None else str(v) for k, v in cfg.items()}
+        self.run = swanlab.init(
+            project=self.project,
+            workspace=self.workspace,
+            name=self.run_id,
+            group=self.group,
+            config=cfg,
+            log_dir=self.run_dir,
+        )
+
+    @overwatch.rank_zero_only
+    def write_hyperparameters(self) -> None:
+        return  # config 已在 init 时传入，无需重复
+
+    @overwatch.rank_zero_only
+    def write(self, global_step: int,
+              metrics: Dict[str, Union[int, float]]) -> None:
+        if self.run is not None:
+            self.run.log(dict(metrics), step=global_step)
+
+    @overwatch.rank_zero_only
+    def finalize(self) -> None:
+        if self.run is not None:
+            self.run.finish()
+            self.run = None
+
+
 # === Core Metrics Container :: Initializes Trackers
 # => Compiles/Pushes Metrics ===
 
@@ -238,6 +296,9 @@ class VLAMetric:
                     run_id, run_dir, hparams, group='vla-train')
             elif tracker_type == 'tensorboard':
                 tracker = TensorBoardTracker(run_id, run_dir, hparams)
+            elif tracker_type == 'swanlab':
+                tracker = SwanLabTracker(
+                    run_id, run_dir, hparams, group='vla-train')
             else:
                 raise ValueError(
                     f'Tracker with type `{tracker_type} is not supported!')

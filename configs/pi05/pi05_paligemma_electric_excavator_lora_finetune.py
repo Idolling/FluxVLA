@@ -75,7 +75,7 @@ model = dict(
         'gate_proj','up_proj','down_proj',
         'projector.projector','out_proj','fc1','fc2'],
     modules_to_save=['action_in_proj','action_out_proj','time_mlp_in','time_mlp_out'],
-    n_action_steps=50,                       # ★ 必须 == action_window_size
+    n_action_steps=20,                       # ★ 必须 == action_window_size  50
     action_in_proj=dict(type='LinearProjector', in_dim=32, out_dim=1024),
     action_out_proj=dict(type='LinearProjector', in_dim=1024, out_dim=32),
     time_mlp_in=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
@@ -129,12 +129,12 @@ model = dict(
         'action_out_proj.projector': 'action_out_proj',
         'llm_backbone.embed_tokens': 'paligemma_with_expert.paligemma.lm_head',
     },
-    params_to_change_dtype=[
-        'llm_expert.llm.model.layers',
-        'vlm_backbone.vlm.model.language_model.layers',
-        'vlm_backbone.vlm.model.vision_tower',
-        'vlm_backbone.vlm.model.multi_modal_projector',
-    ],
+    # params_to_change_dtype=[
+    #     'llm_expert.llm.model.layers',
+        # 'vlm_backbone.vlm.model.language_model.layers',
+        # 'vlm_backbone.vlm.model.vision_tower',
+        # 'vlm_backbone.vlm.model.multi_modal_projector',
+    # ],  # pi05下该配置无效
     ori_action_dim=4,                        # ★ 7 -> 4
     # Supervise all padded model dimensions, as in OpenPI.
     loss_action_dim=32,                      # ★ 与 UR3 同（也对 padding 维监督）；想只监督 4 维就写 4
@@ -143,7 +143,7 @@ model = dict(
 inference_model = model.copy()
 
 train_dataloader = dict(
-    per_device_batch_size=8,
+    per_device_batch_size=16,  # 8
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
@@ -151,7 +151,7 @@ train_dataloader = dict(
             profile='absolute',              # ★ PROFILES 里没有挖机，借 absolute 壳
             state_key='observation.state',
             action_key='actions',            # ★ 复数
-            delta_mask=[True, True, True, True],   # ★ 与下面 RelativeActions.mask 必须一致
+            delta_mask=[True, True, True, True],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
         ),
         name_mappings={
             'observation.state': ['proprio'],
@@ -164,7 +164,7 @@ train_dataloader = dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    '/home/zmc/work/electric_excavator_datasets/lerobot0930',  # noqa: E501
+                    '/home/zmc/work/electric_excavator_datasets/lerobot1028',  # noqa: E501
                 ],
                 action_key='actions',            # ★ 复数
                 transforms=[
@@ -175,12 +175,13 @@ train_dataloader = dict(
                             'info', 'stats', 'action_masks'
                         ],
                         video_keys=['observation.images.head',
-                                 'observation.images.wrist'],       # ★ 你的两个相机
+                                 'observation.images.wrist',
+                                 'observation.images.side'],       # ★ 你的两个相机
                         name_mappings={
                             'observation.state': ['states'],
                             'actions': ['actions']
                         }),
-                    dict(type='RelativeActions', mask=[True] * 4),         # ★ delta
+                    dict(type='RelativeActions', mask=[True] * 4),         # ★ delta,用绝对角度时注释掉
                     dict(
                         type='NormalizeStatesAndActions',
                         action_dim=None,
@@ -206,9 +207,10 @@ train_dataloader = dict(
                         width=224,
                         backend='pil'),
                     dict(type='SimpleNormalizeImages'),
-                    dict(type='OpenPIImageAugment', base_camera_indices=(0, )),
+                    dict(type='OpenPIImageAugment', base_camera_indices=(), brightness=0.35),  #没固定视角写成base_camera_indices=()
+                    # base_camera_indices=(0, )
                 ],
-                action_window_size=50,
+                action_window_size=20,
                 window_start_idx=0,
                 supervise_terminal_padding=True)
         ]))
@@ -216,7 +218,7 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,        # ★★ 必须显式写
-    max_steps=20_000,
+    max_steps=50_000,  # 20_000
     # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
     seed=42,
     optimizer=dict(
@@ -251,41 +253,39 @@ runner = dict(
     ),
     metric=dict(
         type='VLAMetric',
-        active_trackers=('jsonl', 'wandb'),
+        active_trackers=('jsonl', 'swanlab'),   # 原来 ('jsonl', 'wandb')
         run_dir='work_dirs',
         window_size=1),
     enable_gradient_checkpointing=True,        # ← 开（libero 也是 True）
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
     keep_params_fp32=True,
-    save_iter_interval=4000,      # 默认 10000 → 20000 步只存 10 次
-    max_keep_ckpts=1,             # 默认 2
+    save_iter_interval=10000,      # 默认 10000 → 20000 步只存 10 次
+    max_keep_ckpts=2,             # 默认 2
     save_epoch_interval=99999,        # 默认 1
+    grad_accumulation_steps=2,
+    static_graph=False
     )
 
+# ── 挖机真机推理配置（仅 ROS2 服务使用） ──────────────────────────────
+# 由 themis.ros_server.dataset_section='inference' 选中，实际只消费 3 个键：
+#   ckpt_path / dataset / denormalize_action
+#
+# 口径必须与训练一致：lerobot0930（fps=10 / j0–j3 / delta / 未去畸变鱼眼图）。
+# 统计量：<ckpt 同级>/dataset_statistics.json，顶层键 'private'。
+# 两个合法 prompt（填给 excavator_operator 的 prompt 参数，须逐字一致）：
+#   'pick up the coffee and place it on the left table'
+#   'pick up the water and place it on the left table'
 inference = dict(
-    type='URInferenceRunner',
-    keep_params_fp32=True,
-    mixed_precision_dtype='bf16',
-    seed=7,
-    task_descriptions={
-        '1': 'grasp the stopper of the dark-colored wide-mouth bottle',
-        '2': 'place the bottle stopper upside down on the tabletop',
-        '3': 'grasp the body of the dark-colored wide-mouth bottle',
-        '4':
-        'pour the liquid in the dark-colored wide-mouth bottle into the erlenmeyer flask',  # noqa: E501
-        '5': 'put the dark-colored wide-mouth bottle back on the tabletop',
-        '6': 'grasp the measuring cylinder',
-        '7':
-        'pour the liquid in the measuring cylinder into the erlenmeyer flask',
-        '8': 'put the measuring cylinder back on the tabletop',
-        '9': 'grasp the neck of the erlenmeyer flask',
-        '10': 'shake the erlenmeyer flask',
-        '11': 'place the erlenmeyer flask back on the tabletop',
-    },
+    ckpt_path=  # noqa: E251
+    'work_dirs/electric_excavator_pi05_lora_1009/checkpoints/'
+    'step-020000-epoch-011-loss=0.0008.safetensors',
     dataset=dict(
-        type='PrivateInferenceDataset',
-        img_keys=['cam_high', 'cam_left_wrist'],
+        type='ExcavatorPrivateInferenceDataset',   # PrivateInferenceDataset + last_raw_state
+        img_keys=['cam_head', 'cam_wrist', 'cam_side'],        # 顺序须与 themis.transport.image_keys 一致
+        # 默认 True 会把 model_path 注入每个 transform，PadStatesAndActions 不认该参数会报
+        # TypeError；下面 tokenizer 已显式写了 model_path，这里关掉注入即可。
+        inject_model_path=False,
         transforms=[
             dict(
                 type='NormalizeStatesAndActions',
@@ -315,20 +315,57 @@ inference = dict(
     denormalize_action=dict(
         type='DenormalizeDeltaAction',
         norm_type='quantile',
-        action_dim=7,
-        delta_action_mask=[True] * 6 + [False],
+        action_dim=4,
+        delta_action_mask=[True] * 4,  # 使用绝对角度时注释此行
     ),
-    action_chunk=50,
-    operator=dict(
-        type='UROperator',
-        image_encoding='rgb8',
-        command_mode='joint',
-        img_left_topic='/wrist_camera/color/image_raw',
-        img_front_topic='/front_camera/color/image_raw',
-        joint_state_topic='/joint_states',
-        gripper_state_topic='/gripper/position',
-        cartesian_pose_topic='/arm/tcp_pose',
-        joint_cmd_topic='/cmd/servoj',
-        cartesian_cmd_topic='/cmd/servol',
-        gripper_cmd_topic='/cmd/gripper',
-        use_depth_image=False))
+)
+
+# ── ROS 2 服务端（FluxThemis 协议，本方案采用） ───────────────────────
+# 只被 scripts/ros_inference_server.py 读取；inference 段已裁到它真正需要的 3 个键。
+#
+# 启动（GPU 机）：
+#   source /opt/ros/humble/setup.bash
+#   source ~/work/electric_excavator/install/setup.bash   # 里面含 excavator_interfaces
+#   cd ~/work/FluxVLA
+#   /home/zmc/.conda/envs/fluxvla/bin/python scripts/ros_inference_server.py \
+#     --config configs/pi05/pi05_paligemma_electric_excavator_lora_finetune.py \
+#     --ros-version 2 --device cuda:0
+# 机器人侧（另开终端，同样 source 上面两个 setup）：
+#   ros2 run excavator_vla_client excavator_operator --ros-args \
+#     --params-file $(ros2 pkg prefix excavator_vla_client)/share/excavator_vla_client/config/excavator_operator.yaml
+#   然后发 start：ros2 topic pub --once /excavator_vla/operator_command \
+#     std_msgs/msg/String "{data: start}"
+themis = dict(
+    transport=dict(
+        service_name='/fluxvla/predict_action',
+        timeout_s=30.0,
+        image_keys=['cam_head', 'cam_wrist', 'cam_side'],   # ★ 顺序须与 dataset.img_keys 完全一致
+        state_keys=['qpos'],                    # ★ PrivateInferenceDataset 固定读 'qpos'
+        unnorm_key='private',                   # 与 dataset_statistics.json 顶层键一致
+        image_encoding='rgb8',                  # 客户端必须发 rgb8 裸图
+    ),
+    ros_server=dict(
+        ros_version=2,
+        node_name='fluxvla_excavator_server',
+        dataset_section='inference',            # 复用上面的 inference.dataset / denormalize_action
+        device='cuda:0',
+        mixed_precision_dtype='bf16',
+        enable_mixed_precision=True,
+        model_outputs_environment_actions=False,
+        denormalize_context=dict(task_suite_name='private'),
+        workers=dict(
+            startup_timeout_s=900.0,
+            request_timeout_s=120.0,
+            lease_timeout_s=900.0,
+        ),
+    ),
+)
+
+
+# ── RTC（Real-Time Chunking，推理期前缀条件）─────────────────────────────
+# 生效条件：enabled=True 且客户端在 obs 里上报 rtc_done_steps / rtc_prefix_len；
+# 旧客户端不上报时自动退化为同步 chunk 推理（行为与改造前完全一致）。
+rtc = dict(
+    enabled=True,
+    method='prefix',   # prefix：零额外前向；guidance / guidance_vjp 会明显变慢
+)
