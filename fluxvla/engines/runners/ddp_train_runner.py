@@ -926,7 +926,8 @@ class DDPTrainRunner(BaseTrainRunner):
 
         # Log to wandb if enabled
         if (overwatch.is_rank_zero() and self.metric.global_step % 10 == 0
-                and self.wandb_mode != 'disabled'):
+                and self.wandb_mode != 'disabled'
+                and wandb.run is not None):
             wandb.log(
                 {
                     'train_loss': smoothened_loss,

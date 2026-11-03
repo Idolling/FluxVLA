@@ -143,8 +143,8 @@ model = dict(
 inference_model = model.copy()
 
 train_dataloader = dict(
-    per_device_batch_size=16,  # 8
-    per_device_num_workers=4,
+    per_device_batch_size=2,  # 8
+    per_device_num_workers=2,
     dataset=dict(
         type='DistributedRepeatingDataset',
         auto_compute_statistics=dict(        # ★ 替代 dataset_statistics/dataset_statistics_path
@@ -164,7 +164,7 @@ train_dataloader = dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    '/home/zmc/work/electric_excavator_datasets/lerobot1028',  # noqa: E501
+                    '/home/zmc/work/electric_excavator_datasets/lerobot1031_thick',  # noqa: E501
                 ],
                 action_key='actions',            # ★ 复数
                 transforms=[
@@ -218,7 +218,7 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,        # ★★ 必须显式写
-    max_steps=50_000,  # 20_000
+    max_steps=12_000,  # 20_000
     # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
     seed=42,
     optimizer=dict(
@@ -263,7 +263,7 @@ runner = dict(
     save_iter_interval=10000,      # 默认 10000 → 20000 步只存 10 次
     max_keep_ckpts=2,             # 默认 2
     save_epoch_interval=99999,        # 默认 1
-    grad_accumulation_steps=2,
+    grad_accumulation_steps=8,
     static_graph=False
     )
 
