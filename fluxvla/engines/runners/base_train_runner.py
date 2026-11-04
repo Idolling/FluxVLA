@@ -841,6 +841,7 @@ class BaseTrainRunner(ABC):
 
             dataloader_iter = None
             epoch_step_count = 0
+            start_step = self.metric.global_step
 
             while self.metric.global_step < self.max_steps:
                 loss, dataloader_iter = self._run_accumulated_training_step(
@@ -869,6 +870,14 @@ class BaseTrainRunner(ABC):
                     self.current_epoch += 1
                     epoch_step_count = 0
                     dataloader_iter = None
+
+        # 末步不在存档网格上时补存一次，避免最后一段训练丢失。
+        if (self.metric.global_step > start_step
+                and self.metric.global_step % self.save_iter_interval != 0):
+            tail_loss = (sum(self._loss_accumulator) /
+                         len(self._loss_accumulator)
+                         if self._loss_accumulator else None)
+            self._save_and_sync(loss_value=tail_loss)
 
         self.metric.finalize()                      # ← 新增这一行
         return self._get_checkpoint_path()

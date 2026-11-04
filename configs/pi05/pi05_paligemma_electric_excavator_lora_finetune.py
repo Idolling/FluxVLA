@@ -144,7 +144,7 @@ inference_model = model.copy()
 
 train_dataloader = dict(
     per_device_batch_size=2,  # 8
-    per_device_num_workers=2,
+    per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
         auto_compute_statistics=dict(        # ★ 替代 dataset_statistics/dataset_statistics_path
@@ -152,6 +152,7 @@ train_dataloader = dict(
             state_key='observation.state',
             action_key='actions',            # ★ 复数
             delta_mask=[True, True, True, True],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
+            # 各个关节如果用绝对角度就写 False，RelativeActions.mask 里对应位置也要改成 False
         ),
         name_mappings={
             'observation.state': ['proprio'],
@@ -164,7 +165,7 @@ train_dataloader = dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    '/home/zmc/work/electric_excavator_datasets/lerobot1031_thick',  # noqa: E501
+                    '/home/zmc/work/electric_excavator_datasets/lerobot1031_sticker',  # noqa: E501
                 ],
                 action_key='actions',            # ★ 复数
                 transforms=[
@@ -182,6 +183,7 @@ train_dataloader = dict(
                             'actions': ['actions']
                         }),
                     dict(type='RelativeActions', mask=[True] * 4),         # ★ delta,用绝对角度时注释掉
+                    # 绝对false，相对true；与 auto_compute_statistics.delta_mask 必须一致
                     dict(
                         type='NormalizeStatesAndActions',
                         action_dim=None,
@@ -263,7 +265,7 @@ runner = dict(
     save_iter_interval=10000,      # 默认 10000 → 20000 步只存 10 次
     max_keep_ckpts=2,             # 默认 2
     save_epoch_interval=99999,        # 默认 1
-    grad_accumulation_steps=8,
+    grad_accumulation_steps=8,  # 8
     static_graph=False
     )
 
@@ -317,6 +319,7 @@ inference = dict(
         norm_type='quantile',
         action_dim=4,
         delta_action_mask=[True] * 4,  # 使用绝对角度时注释此行
+        # 各关节使用绝对角度false，使用相对角度true；与 RelativeActions.mask 和auto_compute_statistics.mask必须一致
     ),
 )
 
