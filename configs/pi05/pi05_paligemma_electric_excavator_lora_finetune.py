@@ -75,7 +75,7 @@ model = dict(
         'gate_proj','up_proj','down_proj',
         'projector.projector','out_proj','fc1','fc2'],
     modules_to_save=['action_in_proj','action_out_proj','time_mlp_in','time_mlp_out'],
-    n_action_steps=50,                       # ★ 必须 == action_window_size
+    n_action_steps=20,                       # ★ 必须 == action_window_size
     action_in_proj=dict(type='LinearProjector', in_dim=32, out_dim=1024),
     action_out_proj=dict(type='LinearProjector', in_dim=1024, out_dim=32),
     time_mlp_in=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
@@ -208,7 +208,7 @@ train_dataloader = dict(
                     dict(type='SimpleNormalizeImages'),
                     dict(type='OpenPIImageAugment', base_camera_indices=(0, )),
                 ],
-                action_window_size=50,
+                action_window_size=20,
                 window_start_idx=0,
                 supervise_terminal_padding=True)
         ]))
@@ -274,11 +274,11 @@ runner = dict(
 #   'pick up the water and place it on the left table'
 inference = dict(
     ckpt_path=  # noqa: E251
-    'work_dirs/electric_excavator_pi05_lora_1009/checkpoints/'
-    'step-020000-epoch-011-loss=0.0008.safetensors',
+    'work_dirs/exc_1031_thick/checkpoints/'
+    'step-010000-epoch-005-loss=0.0041.safetensors',
     dataset=dict(
         type='ExcavatorPrivateInferenceDataset',   # PrivateInferenceDataset + last_raw_state
-        img_keys=['cam_head', 'cam_wrist'],        # 顺序须与 themis.transport.image_keys 一致
+        img_keys=['cam_head', 'cam_wrist', 'cam_side'],        # 顺序须与 themis.transport.image_keys 一致
         # 默认 True 会把 model_path 注入每个 transform，PadStatesAndActions 不认该参数会报
         # TypeError；下面 tokenizer 已显式写了 model_path，这里关掉注入即可。
         inject_model_path=False,
@@ -335,7 +335,7 @@ themis = dict(
     transport=dict(
         service_name='/fluxvla/predict_action',
         timeout_s=30.0,
-        image_keys=['cam_head', 'cam_wrist'],   # ★ 顺序须与 dataset.img_keys 完全一致
+        image_keys=['cam_head', 'cam_wrist', 'cam_side'],   # ★ 顺序须与 dataset.img_keys 完全一致
         state_keys=['qpos'],                    # ★ PrivateInferenceDataset 固定读 'qpos'
         unnorm_key='private',                   # 与 dataset_statistics.json 顶层键一致
         image_encoding='rgb8',                  # 客户端必须发 rgb8 裸图
