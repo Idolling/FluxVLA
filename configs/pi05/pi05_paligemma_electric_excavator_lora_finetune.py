@@ -280,8 +280,8 @@ runner = dict(
 #   'pick up the water and place it on the left table'
 inference = dict(
     ckpt_path=  # noqa: E251
-    'work_dirs/electric_excavator_pi05_lora_1009/checkpoints/'
-    'step-020000-epoch-011-loss=0.0008.safetensors',
+    'work_dirs/exc_1031_sticker/checkpoints/'
+    'step-010000-epoch-004-loss=0.0040.safetensors',
     dataset=dict(
         type='ExcavatorPrivateInferenceDataset',   # PrivateInferenceDataset + last_raw_state
         img_keys=['cam_head', 'cam_wrist', 'cam_side'],        # 顺序须与 themis.transport.image_keys 一致

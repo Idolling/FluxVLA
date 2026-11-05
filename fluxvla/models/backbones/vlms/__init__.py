@@ -14,7 +14,15 @@
 
 from fluxvla.engines.utils.heterogeneous_runtime import \
     import_heterogeneous_runtime_symbols
-from .eagle import EagleBackbone, EagleInferenceBackbone  # noqa: F401, F403
+try:  # flash_attn 在 Jetson(Thor) 上不可用；pi05/paligemma 不依赖 eagle
+    from .eagle import EagleBackbone, EagleInferenceBackbone  # noqa: F401, F403
+except ImportError as _eagle_import_error:  # pragma: no cover
+    import warnings as _warnings
+    _warnings.warn(
+        f'eagle backbone disabled (missing optional dependency: '
+        f'{_eagle_import_error}); safe to ignore for pi05 inference.')
+    EagleBackbone = None
+    EagleInferenceBackbone = None
 from .outputs import VLMBackboneOutput  # noqa: F401
 from .outputs import normalize_vlm_backbone_output  # noqa: F401
 
