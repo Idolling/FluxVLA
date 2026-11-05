@@ -215,7 +215,38 @@ def create_server(
     rtc_cfg = dict(rtc_config or {})
     rtc_enabled = bool(rtc_cfg.get('enabled', False))
     rtc_method = str(rtc_cfg.get('method', 'prefix'))
-    rtc_state: dict = {'prev_actions': None, 'prefix_total': 0}
+    rtc_state: dict = {'prev_actions': None, 'prefix_total': 0, 'state': None}
+
+    # 上一轮 prefix 的增量基准是上一轮的 state，需换算到本轮 state
+    _rtc_stats = None
+    _ns = getattr(denormalize_action, 'norm_stats', None)
+    if (isinstance(_ns, dict)
+            and getattr(denormalize_action, 'norm_type', '') == 'quantile'):
+        _a = _ns.get(getattr(denormalize_action, 'statistic_name', 'private'),
+                     {}).get('action', {})
+        _m = getattr(denormalize_action, 'delta_action_mask', None)
+        if _a.get('q01') is not None and _m is not None:
+            _rtc_stats = (np.asarray(_a['q01'], np.float64),
+                          np.asarray(_a['q99'], np.float64),
+                          np.asarray(_m, bool))
+
+    def _q_to_raw(z, q01, q99):
+        return (z + 1.0) * 0.5 * (q99 - q01 + 1e-6) + q01
+
+    def _q_to_norm(x, q01, q99):
+        return (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+
+    def _rebase(prefix, s_old, s_new):
+        """prefix 由 s_old 基准换到 s_new 基准，仅 delta 维。"""
+        q01, q99, m = _rtc_stats
+        d = min(len(m), prefix.shape[-1], len(q01))
+        p = prefix.cpu().numpy().astype(np.float64)
+        so = np.asarray(s_old, np.float64).reshape(-1)[:d]
+        sn = np.asarray(s_new, np.float64).reshape(-1)[:d]
+        raw = _q_to_raw(p[:, :, :d], q01[:d], q99[:d]) + so - sn
+        p[:, :, :d] = np.where(m[:d], _q_to_norm(raw, q01[:d], q99[:d]),
+                               p[:, :, :d])
+        return torch.as_tensor(p, dtype=prefix.dtype, device=prefix.device)
 
     def _pop_rtc_scalar(obs_dict, key):
         """取出并删除 obs 里的 int 标量字段（不进 dataset 预处理）。"""
@@ -280,8 +311,13 @@ def create_server(
                 avail = max(0, min(n_steps, prev.shape[1]) - done)
                 span = max(0, min(int(rtc_prefix_len), avail))
                 if span > 0:
-                    batch['prev_actions'] = prev[:, done:done + span].to(
-                        torch_device)
+                    prev_raw = prev[:, done:done + span]
+                    if (_rtc_stats is not None
+                            and rtc_state['state'] is not None
+                            and denormalize_context.get('state') is not None):
+                        prev_raw = _rebase(prev_raw, rtc_state['state'],
+                                           denormalize_context['state'])
+                    batch['prev_actions'] = prev_raw.to(torch_device)
                     batch['prefix_len'] = span
                     batch['rtc_config'] = {
                         'enabled': True,
@@ -291,6 +327,9 @@ def create_server(
             actions = vla.predict_action(**batch)
             if rtc_enabled:
                 rtc_state['prev_actions'] = actions.detach().clone()
+                _s = denormalize_context.get('state')
+                rtc_state['state'] = (None if _s is None
+                                      else np.array(_s, copy=True))
                 rtc_state['prefix_total'] += prefix_used
         infer_time = time.perf_counter() - t0
 
