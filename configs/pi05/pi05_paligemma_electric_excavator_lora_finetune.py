@@ -140,7 +140,30 @@ model = dict(
     loss_action_dim=32,                      # ★ 与 UR3 同（也对 padding 维监督）；想只监督 4 维就写 4
 )
 
+# ── 推理模型：kernel 后端（Triton 融合算子 + 单张 CUDA Graph + bf16 静态 buffer）──
+# 只换 VLA 类与各子模块的 *Inference 变体：后者是原类的子类，只多一个
+# materialize_weights()（把 HF 权重重排成 kernel 布局），forward 完全不变，
+# 所以 ckpt 可以原样 load_state_dict；其余结构/维度沿用 model 段。
+# ⚠ 该后端只支持 RTC prefix（guidance 会 NotImplementedError）；
+#   形状固定：num_views / n_action_steps / num_steps / triton_max_prompt_len 定了就不能变。
 inference_model = model.copy()
+inference_model.update(
+    type='PI05FlowMatchingRTCInference',
+    num_views=3,                 # ★ head + wrist + side
+    triton_max_prompt_len=48,    # prompt 文本 ~15 token + state 4 维离散化，48 够；
+                                 # 换更长的 prompt 必须同步调大（超长会 copy 越界报错）
+    num_steps=10,                # 去噪步数；调小到 8 可再省 ~20% 推理时间
+    llm_backbone=dict(model['llm_backbone'], type='ConditionGemmaInferenceModel'),
+    llm_expert=dict(model['llm_expert'], type='ConditionGemmaInferenceModel'),
+    vision_backbone=dict(model['vision_backbone'],
+                         type='SigLIPViTBackboneInference'),
+    projector=dict(model['projector'], type='LinearProjectorInference'),
+    action_in_proj=dict(model['action_in_proj'], type='LinearProjectorInference'),
+    action_out_proj=dict(model['action_out_proj'],
+                         type='LinearProjectorInference'),
+    time_mlp_in=dict(model['time_mlp_in'], type='LinearProjectorInference'),
+    time_mlp_out=dict(model['time_mlp_out'], type='LinearProjectorInference'),
+)
 
 train_dataloader = dict(
     per_device_batch_size=2,  # 8
@@ -151,7 +174,7 @@ train_dataloader = dict(
             profile='absolute',              # ★ PROFILES 里没有挖机，借 absolute 壳
             state_key='observation.state',
             action_key='actions',            # ★ 复数
-            delta_mask=[True, True, True, True],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
+            delta_mask=[False, False, False, False],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
             # 各个关节如果用绝对角度就写 False，RelativeActions.mask 里对应位置也要改成 False
         ),
         name_mappings={
@@ -165,7 +188,7 @@ train_dataloader = dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    '/home/zmc/work/electric_excavator_datasets/lerobot1031_sticker',  # noqa: E501
+                    '/home/zmc/work/electric_excavator_datasets/lerobot1031_thick',  # noqa: E501
                 ],
                 action_key='actions',            # ★ 复数
                 transforms=[
@@ -182,7 +205,7 @@ train_dataloader = dict(
                             'observation.state': ['states'],
                             'actions': ['actions']
                         }),
-                    dict(type='RelativeActions', mask=[True] * 4),         # ★ delta,用绝对角度时注释掉
+                    dict(type='RelativeActions', mask=[False] * 4),         # ★ delta,用绝对角度时注释掉
                     # 绝对false，相对true；与 auto_compute_statistics.delta_mask 必须一致
                     dict(
                         type='NormalizeStatesAndActions',
@@ -220,7 +243,7 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,        # ★★ 必须显式写
-    max_steps=12_000,  # 20_000
+    max_steps=10_000,  # 20_000
     # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
     seed=42,
     optimizer=dict(
@@ -265,7 +288,7 @@ runner = dict(
     save_iter_interval=10000,      # 默认 10000 → 20000 步只存 10 次
     max_keep_ckpts=2,             # 默认 2
     save_epoch_interval=99999,        # 默认 1
-    grad_accumulation_steps=8,  # 8
+    grad_accumulation_steps=16,  # 8
     static_graph=False
     )
 
@@ -318,7 +341,7 @@ inference = dict(
         type='DenormalizeDeltaAction',
         norm_type='quantile',
         action_dim=4,
-        delta_action_mask=[True] * 4,  # 使用绝对角度时注释此行
+        delta_action_mask=[False] * 4,  # 使用绝对角度时注释此行
         # 各关节使用绝对角度false，使用相对角度true；与 RelativeActions.mask 和auto_compute_statistics.mask必须一致
     ),
 )
