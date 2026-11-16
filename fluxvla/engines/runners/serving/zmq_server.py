@@ -117,6 +117,7 @@ class PolicyServer:
                     continue
 
                 message = self.socket.recv()
+                t_recv = time.perf_counter()
 
                 if detect_format(message) == FORMAT_PROTOBUF:
                     self._handle_protobuf_predict(message)
@@ -131,6 +132,10 @@ class PolicyServer:
                 result = (
                     handler.handler(**request.get('data', {}))
                     if handler.requires_input else handler.handler())
+                # 服务端总耗时（recv → 处理完），供客户端 [LAT] 拆网络/服务端两段；
+                # 不含外层 msgpack 打包与 zmq send 本身。
+                if isinstance(result, dict):
+                    result['srv_total'] = time.perf_counter() - t_recv
                 self.socket.send(MsgSerializer.to_bytes(result))
             except Exception as e:
                 print(f'Error in server: {e}')

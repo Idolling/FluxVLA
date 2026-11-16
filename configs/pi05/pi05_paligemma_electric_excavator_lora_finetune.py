@@ -169,12 +169,13 @@ train_dataloader = dict(
     per_device_batch_size=2,  # 8
     per_device_num_workers=4,
     dataset=dict(
-        type='DistributedRepeatingDataset',
+        type='DistributedBalancedRepeatingDataset',  # DistributedRepeatingDataset
+        sampling_weights=[4.0, 6.0],
         auto_compute_statistics=dict(        # ★ 替代 dataset_statistics/dataset_statistics_path
             profile='absolute',              # ★ PROFILES 里没有挖机，借 absolute 壳
             state_key='observation.state',
             action_key='actions',            # ★ 复数
-            delta_mask=[False, False, False, False],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
+            delta_mask=[True, True, True, True],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
             # 各个关节如果用绝对角度就写 False，RelativeActions.mask 里对应位置也要改成 False
         ),
         name_mappings={
@@ -183,12 +184,14 @@ train_dataloader = dict(
         },
         statistic_keys=['observation.state', 'actions'],   # ★ 去掉 timestamp / eepose
         statistic_name='private',
-        datasets=[
-            dict(
+        # datasets=[
+        #     dict(
+        datasets=dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    '/home/zmc/work/electric_excavator_datasets/lerobot1031_thick',  # noqa: E501
+                    '/home/zmc/work/electric_excavator_datasets/lerobot1110',  # noqa: E501
+                    '/home/zmc/work/electric_excavator_datasets/lerobot1106',
                 ],
                 action_key='actions',            # ★ 复数
                 transforms=[
@@ -205,7 +208,7 @@ train_dataloader = dict(
                             'observation.state': ['states'],
                             'actions': ['actions']
                         }),
-                    dict(type='RelativeActions', mask=[False] * 4),         # ★ delta,用绝对角度时注释掉
+                    dict(type='RelativeActions', mask=[True] * 4),         # ★ delta,用绝对角度时注释掉
                     # 绝对false，相对true；与 auto_compute_statistics.delta_mask 必须一致
                     dict(
                         type='NormalizeStatesAndActions',
@@ -238,17 +241,17 @@ train_dataloader = dict(
                 action_window_size=20,
                 window_start_idx=0,
                 supervise_terminal_padding=True)
-        ]))
+        ))
 
 runner = dict(
     type='DDPTrainRunner',
-    max_epochs=None,        # ★★ 必须显式写
-    max_steps=10_000,  # 20_000
+    max_epochs=8,        # ★★ 必须显式写
+    max_steps=None,  # 20_000
     # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
     seed=42,
     optimizer=dict(
         type='AdamW',
-        lr=2.5e-5,
+        lr=5e-6,  # 2.5e-5
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=1e-10,
@@ -267,9 +270,9 @@ runner = dict(
     lr_scheduler=dict(
         type='linear-warmup+cosine-decay',
         schedule_style='openpi',
-        warmup_steps=1000,
-        decay_steps=30000,
-        min_lr=2.5e-6),
+        warmup_steps=400,  # 1000
+        decay_steps=11700,  # 30000
+        min_lr=1e-6),  # 2.5e-6
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path=  # noqa: E251
@@ -285,10 +288,10 @@ runner = dict(
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
     keep_params_fp32=True,
-    save_iter_interval=10000,      # 默认 10000 → 20000 步只存 10 次
-    max_keep_ckpts=2,             # 默认 2
-    save_epoch_interval=99999,        # 默认 1
-    grad_accumulation_steps=16,  # 8
+    save_iter_interval=100000,      # 默认 10000 → 20000 步只存 10 次
+    max_keep_ckpts=3,             # 默认 2
+    save_epoch_interval=1,        # 默认 1
+    grad_accumulation_steps=8,  # 8
     static_graph=False
     )
 
@@ -341,7 +344,7 @@ inference = dict(
         type='DenormalizeDeltaAction',
         norm_type='quantile',
         action_dim=4,
-        delta_action_mask=[False] * 4,  # 使用绝对角度时注释此行
+        delta_action_mask=[True] * 4,  # 使用绝对角度时注释此行
         # 各关节使用绝对角度false，使用相对角度true；与 RelativeActions.mask 和auto_compute_statistics.mask必须一致
     ),
 )
