@@ -174,7 +174,7 @@ train_dataloader = dict(
             profile='absolute',              # ★ PROFILES 里没有挖机，借 absolute 壳
             state_key='observation.state',
             action_key='actions',            # ★ 复数
-            delta_mask=[False, False, False, False],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
+            delta_mask=[True, True, True, True],   # ★ 与下面 RelativeActions.mask 必须一致，用绝对角度时注释掉
             # 各个关节如果用绝对角度就写 False，RelativeActions.mask 里对应位置也要改成 False
         ),
         name_mappings={
@@ -205,7 +205,7 @@ train_dataloader = dict(
                             'observation.state': ['states'],
                             'actions': ['actions']
                         }),
-                    dict(type='RelativeActions', mask=[False] * 4),         # ★ delta,用绝对角度时注释掉
+                    dict(type='RelativeActions', mask=[True] * 4),         # ★ delta,用绝对角度时注释掉
                     # 绝对false，相对true；与 auto_compute_statistics.delta_mask 必须一致
                     dict(
                         type='NormalizeStatesAndActions',
@@ -303,8 +303,8 @@ runner = dict(
 #   'pick up the water and place it on the left table'
 inference = dict(
     ckpt_path=  # noqa: E251
-    'work_dirs/exc_1031_sticker/checkpoints/'
-    'step-010000-epoch-004-loss=0.0040.safetensors',
+    'work_dirs/exc_1106_16/checkpoints/'
+    'step-030762-epoch-006-loss=0.0014.safetensors',
     dataset=dict(
         type='ExcavatorPrivateInferenceDataset',   # PrivateInferenceDataset + last_raw_state
         img_keys=['cam_head', 'cam_wrist', 'cam_side'],        # 顺序须与 themis.transport.image_keys 一致
@@ -341,7 +341,7 @@ inference = dict(
         type='DenormalizeDeltaAction',
         norm_type='quantile',
         action_dim=4,
-        delta_action_mask=[False] * 4,  # 使用绝对角度时注释此行
+        delta_action_mask=[True] * 4,  # 使用绝对角度时注释此行
         # 各关节使用绝对角度false，使用相对角度true；与 RelativeActions.mask 和auto_compute_statistics.mask必须一致
     ),
 )

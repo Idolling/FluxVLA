@@ -90,6 +90,20 @@ def main() -> int:
         mixed_precision_dtype=torch.bfloat16,
         rtc_config=rtc_cfg or None,
     )
+    
+    import time as _time
+
+    _ep = server._endpoints["predict_action"]
+    _orig = _ep.handler
+
+    def _timed(**kw):
+        t = _time.perf_counter()
+        out = _orig(**kw)
+        out["srv_total"] = _time.perf_counter() - t
+        return out
+
+    _ep.handler = _timed
+
     print(f'[serve] ready on tcp://{args.host}:{args.port} '
           f'(task_suite={task_suite})', flush=True)
     server.run()
