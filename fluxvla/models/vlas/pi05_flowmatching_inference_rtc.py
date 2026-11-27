@@ -38,10 +38,16 @@ def _posemb_sincos_torch(t: torch.Tensor,
                      dim=-1)
 
 
-def _apply_prefill_mask(buffers) -> None:
-    buffers['diffusion_noise'].mul_(buffers['prefill_inv_mask'])
-    buffers['diffusion_noise'].add_(buffers['prefill_actions'] *
-                                    buffers['prefill_mask'])
+def _apply_prefill_mask(buffers, step: int = -1) -> None:
+    x = buffers['diffusion_noise']
+    if step < 0:                                     # 旧行为，保留给回归测试
+        x.mul_(buffers['prefill_inv_mask'])
+        x.add_(buffers['prefill_actions'] * buffers['prefill_mask'])
+        return
+    err = torch.sub(buffers['prefill_actions'], x, out=buffers['prefill_err'])
+    err.mul_(buffers['prefill_w'])
+    err.mul_(buffers['prefill_lam'][step])           # ★ 0-dim tensor，图内合法
+    x.add_(err)
 
 
 def vision_encoder(weights, buffers, num_views, num_vit_layers=27):
@@ -289,7 +295,7 @@ def transformer_decoder_rtc(weights,
             buffers['diffusion_noise'],
             buffers['diffusion_noise'],
         )
-        _apply_prefill_mask(buffers)
+        _apply_prefill_mask(buffers, step)
 
 
 def pi05rtc_model(weights,
@@ -436,6 +442,12 @@ class PI05FlowMatchingRTCInference(PI05FlowMatching):
             torch.ones((dec, 1), dtype=bf, device=dev),
             'diffusion_noise':
             torch.zeros(dec, ad, dtype=bf, device=dev),
+            'prefill_w':
+            torch.zeros(self._decoder_seq_len, 1, dtype=torch.float16, device='cuda'),
+            'prefill_err':
+            torch.zeros(self._decoder_seq_len, self._action_dim, dtype=torch.float16, device='cuda'),
+            'prefill_lam':
+            torch.zeros(self._num_steps, 1, 1, dtype=torch.float16, device='cuda')
         }
 
     def _init_rope_table(self):
@@ -541,13 +553,14 @@ class PI05FlowMatchingRTCInference(PI05FlowMatching):
                     self._base_adarms_mod_final_t0[None, None, :])
 
     def _prepare_prefill(self, diffusion_noise, prefill_actions,
-                         action_prefill_len):
+                         action_prefill_len, guide_len=None):
         prefill_len = int(action_prefill_len or 0)
         prefill_len = max(0, min(prefill_len, self._decoder_seq_len))
 
         self._triton_bufs['prefill_actions'].zero_()
         self._triton_bufs['prefill_mask'].zero_()
         self._triton_bufs['prefill_inv_mask'].fill_(1)
+        self._triton_bufs['prefill_w'].zero_()
         if prefill_len == 0:
             return 0
         if prefill_actions is None:
@@ -565,13 +578,23 @@ class PI05FlowMatchingRTCInference(PI05FlowMatching):
                 device=pref.device)
             pref = torch.cat([pref, pad], dim=-1)
 
-        copy_len = min(prefill_len, int(pref.shape[0]), self._decoder_seq_len)
-        self._triton_bufs['prefill_actions'][:copy_len].copy_(pref[:copy_len])
-        self._triton_bufs['prefill_mask'][:copy_len].fill_(1)
-        self._triton_bufs['prefill_inv_mask'][:copy_len].fill_(0)
-        diffusion_noise[:copy_len].copy_(
-            self._triton_bufs['prefill_actions'][:copy_len])
-        return copy_len
+        if guide_len is None:
+            guide_len = prefill_len
+        guide_len = max(
+            prefill_len,
+            min(int(guide_len), int(pref.shape[0]), self._decoder_seq_len))
+        prefill_len = min(prefill_len, guide_len)
+        self._triton_bufs['prefill_actions'][:guide_len].copy_(pref[:guide_len])
+        self._triton_bufs['prefill_mask'][:prefill_len].fill_(1)
+        self._triton_bufs['prefill_inv_mask'][:prefill_len].fill_(0)
+        diffusion_noise[:prefill_len].copy_(
+            self._triton_bufs['prefill_actions'][:prefill_len])
+        # 权重表：前 prefill_len 行为 1，其后线性衰减到 0
+        self._triton_bufs['prefill_w'][:prefill_len] = 1.0
+        if guide_len > prefill_len:
+            frac = torch.linspace(0, 1, guide_len - prefill_len + 2, device='cuda')[1:-1]
+            self._triton_bufs['prefill_w'][prefill_len:guide_len, 0] = 1.0 - frac
+        return prefill_len
 
     def _run_forward(self):
         pi05rtc_model(self._triton_weights, self._triton_bufs, self.num_views,
@@ -623,7 +646,16 @@ class PI05FlowMatchingRTCInference(PI05FlowMatching):
             self._get_decoder_rope_weights(prompt_len))
         self._triton_bufs['diffusion_noise'].copy_(diffusion_noise)
         prefill_len = self._prepare_prefill(
-            self._triton_bufs['diffusion_noise'], prev_actions, prefix_len)
+            self._triton_bufs['diffusion_noise'], prev_actions, prefix_len,
+            guide_len=getattr(self, '_rtc_guide_len', 0) or None)
+        lam = getattr(self, '_rtc_lam', None)          # None 或 float 或 list[num_steps]
+        if prefill_len == 0 or lam is None:
+            self._triton_bufs['prefill_lam'].zero_()
+        elif isinstance(lam, (int, float)):
+            self._triton_bufs['prefill_lam'].fill_(float(lam))
+        else:
+            self._triton_bufs['prefill_lam'][:, 0, 0] = torch.as_tensor(
+                lam, dtype=torch.float16, device='cuda')
         self._update_runtime_adarms_mods(prefill_len)
 
         if not self._cuda_graph_ready:
@@ -686,9 +718,18 @@ class PI05FlowMatchingRTCInference(PI05FlowMatching):
         if prev_actions is not None and prefix_len > 0 and rtc_config:
             if rtc_config.get('enabled', True):
                 rtc_method = rtc_config.get('method', 'prefix')
-        if rtc_method not in (None, 'prefix'):
+        if rtc_method not in (None, 'prefix', 'guidance'):
             raise NotImplementedError(
-                'PI05FlowMatchingRTCInference only supports prefix RTC.')
+                f'unsupported rtc method: {rtc_method}')
+        if rtc_method == 'guidance' and rtc_config.get('use_vjp', False):
+            raise NotImplementedError('kernel backend has no backward; use_vjp=False only')
+
+        # λ：每步把 latent 往旧计划拉回的比例。1.0 = 拉满（w=1 处等价硬 pin）
+        self._rtc_lam = (float(rtc_config.get('lam', 1.0))
+                         if rtc_method else None)
+        # prefix：只钉前 prefix_len 行；guidance：整段重叠区都作为引导目标
+        self._rtc_guide_len = (int(prev_actions.shape[1])
+                               if rtc_method == 'guidance' else 0)
 
         denoised = self._triton_forward(
             images_nhwc,
@@ -696,7 +737,7 @@ class PI05FlowMatchingRTCInference(PI05FlowMatching):
             prompt_len,
             noise_t,
             prev_actions=prev_actions,
-            prefix_len=prefix_len if rtc_method == 'prefix' else 0)
+            prefix_len=prefix_len if rtc_method else 0)
         result = denoised[:, :self.max_action_dim].unsqueeze(0).float()
 
         return result

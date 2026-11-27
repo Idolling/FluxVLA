@@ -149,7 +149,7 @@ model = dict(
 inference_model = model.copy()
 inference_model.update(
     type='PI05FlowMatchingRTCInference',
-    num_views=3,                 # ★ head + wrist + side
+    num_views=2,                 # ★ head + wrist + side
     triton_max_prompt_len=48,    # prompt 文本 ~15 token + state 4 维离散化，48 够；
                                  # 换更长的 prompt 必须同步调大（超长会 copy 越界报错）
     num_steps=10,                # 去噪步数；调小到 8 可再省 ~20% 推理时间
@@ -170,7 +170,7 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedBalancedRepeatingDataset',  # DistributedRepeatingDataset
-        sampling_weights=[4.0, 6.0],
+        # sampling_weights=[3.0, 1.0],
         auto_compute_statistics=dict(        # ★ 替代 dataset_statistics/dataset_statistics_path
             profile='absolute',              # ★ PROFILES 里没有挖机，借 absolute 壳
             state_key='observation.state',
@@ -190,8 +190,8 @@ train_dataloader = dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    '/home/zmc/work/electric_excavator_datasets/lerobot1110',  # noqa: E501
-                    '/home/zmc/work/electric_excavator_datasets/lerobot1106',
+                    '/home/zmc/work/electric_excavator_datasets/lerobot1025',  # noqa: E501
+                    # '/home/zmc/work/electric_excavator_datasets/lerobot1025_white',  # noqa: E501
                 ],
                 action_key='actions',            # ★ 复数
                 transforms=[
@@ -203,7 +203,8 @@ train_dataloader = dict(
                         ],
                         video_keys=['observation.images.head',
                                  'observation.images.wrist',
-                                 'observation.images.side'],       # ★ 你的两个相机
+                                #  'observation.images.side'
+                                 ],       # ★ 你的两个相机
                         name_mappings={
                             'observation.state': ['states'],
                             'actions': ['actions']
@@ -245,13 +246,13 @@ train_dataloader = dict(
 
 runner = dict(
     type='DDPTrainRunner',
-    max_epochs=8,        # ★★ 必须显式写
+    max_epochs=4,        # ★★ 必须显式写
     max_steps=None,  # 20_000
     # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
     seed=42,
     optimizer=dict(
         type='AdamW',
-        lr=5e-6,  # 2.5e-5
+        lr=3e-6,  # 2.5e-5
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=1e-10,
@@ -270,8 +271,8 @@ runner = dict(
     lr_scheduler=dict(
         type='linear-warmup+cosine-decay',
         schedule_style='openpi',
-        warmup_steps=400,  # 1000
-        decay_steps=11700,  # 30000
+        warmup_steps=633,  # 1000
+        decay_steps=21092,  # 30000
         min_lr=1e-6),  # 2.5e-6
     tokenizer=dict(
         type='PretrainedTokenizer',
@@ -290,7 +291,7 @@ runner = dict(
     keep_params_fp32=True,
     save_iter_interval=100000,      # 默认 10000 → 20000 步只存 10 次
     max_keep_ckpts=3,             # 默认 2
-    save_epoch_interval=1,        # 默认 1
+    save_epoch_interval=2,        # 默认 1
     grad_accumulation_steps=8,  # 8
     static_graph=False
     )
@@ -396,5 +397,6 @@ themis = dict(
 # 旧客户端不上报时自动退化为同步 chunk 推理（行为与改造前完全一致）。
 rtc = dict(
     enabled=True,
-    method='prefix',   # prefix：零额外前向；guidance / guidance_vjp 会明显变慢
+    method='guidance',   # 软约束：pin 前 rtc_prefix_len 步 + 重叠区按权重拉回
+    lam=1.0,             # 每步拉回比例，必须 1.0（<1 会被模型自身推力顶穿）
 )

@@ -285,13 +285,12 @@ def create_server(
                 avail = max(0, min(n_steps, prev.shape[1]) - done)
                 span = max(0, min(int(rtc_prefix_len), avail))
                 if span > 0:
-                    batch['prev_actions'] = prev[:, done:done + span].to(
+                    batch['prev_actions'] = prev[:, done:done + avail].to(
                         torch_device)
                     batch['prefix_len'] = span
-                    batch['rtc_config'] = {
-                        'enabled': True,
-                        'method': rtc_method,
-                    }
+                    # 透传 config 里的 lam / decay_end 等，method 以服务端为准
+                    batch['rtc_config'] = dict(
+                        rtc_cfg, enabled=True, method=rtc_method)
                     prefix_used = span
             actions = vla.predict_action(**batch)
             if rtc_enabled:
